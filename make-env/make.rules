@@ -1,0 +1,595 @@
+############################################################
+# make.rules
+############################################################
+#
+# Example usages:
+# - Define an APPLICATION and APP_SOURCE to build a binary
+# - Define a LIBRARY and LIB_SOURCE to build a static library
+# - Define a SOLIBRARY and LIB_SOURCE to build a shared library
+# - Define SUBDIRS and depend build targets on 'buildloop' to iterate
+#
+# For unit tests:
+# - Define TEST_DIR to indicate test subdir
+# - Define RUN_TEST in that dir's Makefile
+#
+# For packaging:
+# - Define PROJECT to build an RPM with 'make pkg'
+#
+############################################################
+
+MFE_MAKE_ENV_DIR := $(realpath $(dir $(lastword $(MAKEFILE_LIST))))
+MAKEFILENAME := Makefile
+
+OS_TYPE = $(shell uname -s)
+ifndef OS_VERSION
+   OS_VERSION = $(shell uname -r)
+endif
+
+# Gives the ability to override arch. This is useful for a noarch build
+ifndef OS_ARCH
+   OS_ARCH = $(shell uname -i)
+endif
+
+ifeq ($(findstring el7,$(OS_VERSION)),el7)
+   OS_VENDOR = el7
+else ifeq ($(findstring el5,$(OS_VERSION)),el5)
+   OS_VENDOR = el5
+else ifeq ($(findstring el6,$(OS_VERSION)),el6)
+   OS_VENDOR = el6
+else
+   OS_VENDOR = 
+endif
+
+ifeq ($(findstring Release,$(MAKECMDGOALS)),Release)
+   PLATFORM = $(OS_TYPE).$(OS_VENDOR).$(OS_ARCH)Release
+   RELEASE = 1
+else
+   PLATFORM = $(OS_TYPE).$(OS_VENDOR).$(OS_ARCH)
+   DEBUG = 1
+endif
+
+# If we are working with a noarch build, then override/clear vendor and version
+ifeq ($(findstring noarch,$(OS_ARCH)),noarch)
+   ifndef KEEPVENDOR
+      OS_VENDOR = 
+      OS_VERSION =
+      PLATFORM = $(OS_ARCH)
+   endif
+endif
+
+
+# The applications can provide these; if they do not, then default them to
+# be the project directory.
+SHAREDIR ?= $(PROJ_BASE)/
+
+# These allow the user to change the names or add different directory levels.
+INCDIR_NAME ?= include/$(PLATFORM)
+LIBDIR_NAME ?= lib/$(PLATFORM)
+BINDIR_NAME ?= bin/$(PLATFORM)
+
+
+#ifeq ($(OS_ARCH), x86_64)
+ifeq ($(shell uname -i), x86_64)
+    LIBARCHDIR = lib64
+else
+    LIBARCHDIR = lib
+endif
+
+
+ifdef APP_SOURCE
+
+   APP_TMP_SOURCE = $(foreach entry,$(APP_SOURCE),$(PLATFORM)/$(entry))
+   APP_CPP_DEPFILES = $(subst .cpp,.d,$(APP_TMP_SOURCE))
+   APP_DEPFILES = $(subst .c,.d,$(APP_CPP_DEPFILES))
+   APP_CPP_OBJS = $(subst .cpp,.o,$(APP_TMP_SOURCE))
+   APP_OBJS = $(subst .c,.o,$(APP_CPP_OBJS))
+
+endif
+
+ifdef LIB_SOURCE
+
+   LIB_TMP_SOURCE = $(foreach entry,$(LIB_SOURCE), $(PLATFORM)/$(entry))
+   LIB_CPP_DEPFILES = $(subst .cpp,.d,$(LIB_TMP_SOURCE))
+   LIB_TMPCPP_DEPFILES = $(subst .CPP,.d,$(LIB_CPP_DEPFILES))
+   LIB_DEPFILES = $(subst .c,.d,$(LIB_TMPCPP_DEPFILES))
+   LIB_CPP_OBJS = $(subst .cpp,.o,$(LIB_TMP_SOURCE))
+   LIB_TMPCPP_OBJS = $(subst .CPP,.o,$(LIB_CPP_OBJS))
+   LIB_OBJS = $(subst .c,.o,$(LIB_TMPCPP_OBJS))
+   ifdef EXTRA_LIB_OBJS
+   LIB_OBJS += $(EXTRA_LIB_OBJS)
+   endif
+
+endif
+
+
+# Set up macros for all the tools we will use
+AR=/usr/bin/ar
+AS=/usr/bin/as
+CC=/usr/bin/gcc
+CPLUS=/usr/bin/g++
+CD=cd
+RM=/bin/rm -f
+RMDIR=/bin/rm -rf
+MKDIR=/bin/mkdir 
+LNINSTALL=/bin/ln -s
+CPINSTALL=/bin/cp -fp
+CPDIRINSTALL=/bin/cp -rfp
+DIRINSTALL=/usr/bin/install -d
+BUILD=/usr/bin/gmake
+MAKEAR=$(AR) -r
+SED=/bin/sed
+SHELL=/bin/sh
+DEPENDENCIES=$(CPLUS) -M
+
+STATIC_LIB_EXTENSION=.a
+SHARED_LIB_EXTENSION=.so
+
+LINK=$(CPINSTALL)
+UNLINK=$(RM)
+
+TMP_DEFINES = $(patsubst %,-D%,$(PROJ_DEFINES))
+TMP_UNDEFINES = $(patsubst %,-U%,$(PROJ_UNDEFINES))
+
+DEFINES += $(TMP_DEFINES) $(TMP_UNDEFINES)
+
+ifdef MT
+DEFINES += -D_PTHREADS -pthread
+endif
+
+ifdef RTTI
+endif
+
+ifdef DEBUG
+   DEFINES += -D _DEBUG
+   CFLAGS += -g
+   CCFLAGS += -g
+   # For debugging docker rpm builds
+   INTERACTIVE += --rm --tty --interactive --entrypoint /bin/bash
+else
+   DEFINES += -D NDEBUG
+   CFLAGS += -g -O
+   CCFLAGS += -g -O
+endif
+
+# Create -I strings for the share/include directories
+SHARE_INCS = $(PWD):$(SHAREDIR)$(INCDIR_NAME)
+SHARE_DASHI = $(patsubst %,-I%,$(subst :, ,$(SHARE_INCS)))
+SHARE_DASHI += $(patsubst %,-I%,$(subst :, ,$(STL_DIR)))
+SHARE_DASHI += $(patsubst %,-I%,$(INC_DIRS))
+
+# Create -L strings for the libraries
+SHARE_LIBS = $(SHAREDIR)$(LIBDIR_NAME)
+LIBS_DASHL = $(patsubst %,-L%,$(subst :, ,$(SHARE_LIBS)))
+LIBS_DASHL += $(patsubst %,-L%,$(LIB_DIRS))
+
+# Suffix rules
+
+.SUFFIXES: .cpp .c .cc .o .d
+
+$(PLATFORM)/%.d: %.c
+	@echo "Dependency update: $<"
+	@mkdir -p `dirname $@`
+	@$(DIRINSTALL) $(PLATFORM)
+	@$(SHELL) -ec '$(DEPENDENCIES) $(CFLAGS) -DINCLUDE_IMPL $< \
+	    | (echo -n $@ $(shell dirname $@)/; cat) > $@; \
+	    grep -q ':' $@ || $(RM) $@'
+
+$(PLATFORM)/%.d: %.cc
+	@echo "Dependency update: $<"
+	@mkdir -p `dirname $@`
+	@$(DIRINSTALL) $(PLATFORM)
+	@$(SHELL) -ec '$(DEPENDENCIES) $(CCFLAGS) -DINCLUDE_IMPL $< \
+	    | (echo -n $@ $(shell dirname $@)/; cat) > $@; \
+	    grep -q ':' $@ || $(RM) $@'
+
+$(PLATFORM)/%.d: %.cpp
+	@echo "Dependency update: $<"
+	@mkdir -p `dirname $@`
+	@$(DIRINSTALL) $(PLATFORM)
+	@$(SHELL) -ec '$(DEPENDENCIES) $(CCFLAGS) -DINCLUDE_IMPL $< \
+	    | (echo -n $@ $(shell dirname $@)/; cat) > $@; \
+	    grep -q ':' $@ || $(RM) $@'
+
+$(PLATFORM)/%.o: %.c
+	@$(DIRINSTALL) $(PLATFORM)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(PLATFORM)/%.o: %.cc
+	@$(DIRINSTALL) $(PLATFORM)
+	$(CPLUS) -c $(CCFLAGS) $< -o $@
+
+$(PLATFORM)/%.o: %.cpp
+	@$(DIRINSTALL) $(PLATFORM)
+	$(CPLUS) -c $(CCFLAGS) $< -o $@
+
+STATIC=-Wl,-Bstatic
+DYNAMIC=-Wl,-Bdynamic
+TMP_LIBS1=$(patsubst -lsocket,,$(UNIX_LIBRARIES))
+TMP_LIBS2=$(patsubst -Bstatic,$(STATIC),$(TMP_LIBS1))
+ALL_LIBS=$(patsubst -Bdynamic,$(DYNAMIC),$(TMP_LIBS2))
+SOLDFLAGS=-fPIC -shared $(LIBS_DASHL) $(ALL_LIBS)
+
+INCLUDES = $(SHARE_DASHI) $(TMPL_DASHI)
+LIBS = $(LIBS_DASHL) $(ALL_LIBS) -lstdc++
+CFLAGS += -fPIC $(INCLUDES) $(DEFINES) 
+CCFLAGS += -x c++ -fPIC $(INCLUDES) $(DEFINES) 
+
+ifdef RELEASE
+  SYM ?= -s
+  CLDFLAGS += $(SYM) $(INCLUDES) $(DEFINES)
+  CCLDFLAGS += $(SYM) $(INCLUDES) $(DEFINES)
+else
+  CLDFLAGS += $(INCLUDES) $(DEFINES)
+  CCLDFLAGS += $(INCLUDES) $(DEFINES)
+endif
+
+DEPFILES = $(APP_DEPFILES) $(LIB_DEPFILES)
+
+ifdef LIBRARY
+LIB_TARGET += $(PLATFORM)/$(LIBRARY)
+endif
+
+ifdef SOLIBRARY
+LIB_TARGET += $(PLATFORM)/$(SOLIBRARY)
+endif
+
+ifdef APPLICATION
+APP_TARGET += $(PLATFORM)/$(APPLICATION)
+endif
+
+ifdef HEADERS
+LIB_TARGET += headershare
+endif
+
+BUILD_TARGET += $(LIB_TARGET) $(APP_TARGET)
+all : $(BUILD_TARGET) $(EXTRA_BUILD_TARGETS)
+
+ifdef LIBRARY
+$(PLATFORM)/$(LIBRARY) : $(LIB_OBJS) 
+	$(MAKEAR) $(PLATFORM)/$(LIBRARY) $(LIB_OBJS) 
+endif
+
+ifdef SOLIBRARY
+$(PLATFORM)/$(SOLIBRARY) : $(LIB_OBJS) 
+	$(CPLUS) $(LIB_OBJS) -o $(PLATFORM)/$(SOLIBRARY) $(SOLDFLAGS) $(CCLDFLAGS)
+endif
+
+ifdef APPLICATION
+$(PLATFORM)/$(APPLICATION): $(APP_OBJS) $(EXTRA_APP_OBJS)
+	$(CPLUS) $(APP_OBJS) $(EXTRA_APP_OBJS) $(LIBS) -o $(PLATFORM)/$(APPLICATION) $(CCLDFLAGS)
+endif
+
+ifdef LIBRARY
+ifndef SOLIBRARY
+LIB_INSTALL_TARGET += libshare
+endif
+endif
+
+ifdef SOLIBRARY
+ifndef LIBRARY
+LIB_INSTALL_TARGET += libshare
+endif
+endif
+
+ifdef LIBRARY
+ifdef SOLIBRARY
+LIB_INSTALL_TARGET += libshare
+endif
+endif
+
+ifdef APPLICATION
+APP_INSTALL_TARGET += appshare
+endif
+
+INSTALL_TARGET += $(LIB_TARGET) $(LIB_INSTALL_TARGET) $(APP_TARGET) $(APP_INSTALL_TARGET)
+
+.PHONY : install
+install: $(INSTALL_TARGET)
+
+# Share support targets
+ifdef LIBRARY
+SHARE_TARGET += copy_lib
+endif
+
+ifdef SOLIBRARY
+SHARE_TARGET += copy_solib
+endif
+
+libshare: $(SHAREDIR)$(LIBDIR_NAME) $(SHARE_TARGET)
+
+copy_lib: ./$(PLATFORM)/$(LIBRARY)
+	$(CPINSTALL) $^ $(SHAREDIR)$(LIBDIR_NAME)
+
+copy_solib: ./$(PLATFORM)/$(SOLIBRARY)
+	$(CPINSTALL) $^ $(SHAREDIR)$(LIBDIR_NAME)
+
+$(SHAREDIR)$(LIBDIR_NAME):
+	$(DIRINSTALL) $@
+
+ifdef APPLICATION
+appshare: ./$(PLATFORM)/$(APPLICATION) $(SHAREDIR)$(BINDIR_NAME)
+	$(CPINSTALL) $^
+
+$(SHAREDIR)$(BINDIR_NAME):
+	$(DIRINSTALL) $@
+endif
+
+ifdef HEADERS
+headershare: $(HEADERS) $(SHAREDIR)$(INCDIR_NAME)
+	-@$(CD) $(SHAREDIR)$(INCDIR_NAME); $(RM) $(HEADERS)
+	@$(CPINSTALL) $(HEADERS) $(SHAREDIR)$(INCDIR_NAME)
+
+$(SHAREDIR)$(INCDIR_NAME):
+	$(DIRINSTALL) $@
+
+endif
+
+ifeq ($(findstring coverage,$(MAKECMDGOALS)),coverage)
+COV_RELEASE_EXTRA=gcov
+COV_INSTALL_ROOT=$(CFROOT)/$(COV_RELEASE_EXTRA)
+endif
+
+ifdef RUN_TEST
+
+ifndef COV_TARGET_DIR
+COV_TARGET_DIR = ..
+endif
+
+test: ./$(PLATFORM)/$(APPLICATION)
+	./$(PLATFORM)/$(APPLICATION) --gtest_output=xml:$(PROJ_BASE)/../test-results/$(APPLICATION)-output.xml
+
+# coverage builds assume the test directory is parented by the target directory.
+# If this is not the case, use COV_TARGET_DIR to specify the true target
+# directory. This is the directory which is a root of all directories to
+# process.
+# Also, additional directories to process can be added by setting COV_ADD_DIRS
+# to a list of directories relative to the target directory.
+# By default, the target directory and target/test directory are processed.
+coverage: CFLAGS += -fprofile-arcs -ftest-coverage -DCOVERAGE
+coverage: CCFLAGS += -fprofile-arcs -ftest-coverage -DCOVERAGE
+coverage: CCLDFLAGS += -coverage
+coverage: LCOV=lcov --rc lcov_branch_coverage=1 
+coverage: clean cov_platform_dirs install test
+	# First collect data from the test parent directory (which may be the target dir). \
+	TDIR=$$(basename $$(pwd)) && \
+	CDIR=`readlink -f $(COV_TARGET_DIR)` && \
+	$(CD) .. && \
+	$(LCOV) -b . --directory $(PLATFORM) -k . --capture -o $${CDIR}/coverage.info && \
+	# Now collect data from the test directory if it exists. \
+	if [ -d $${TDIR}/$(PLATFORM) ] ; then \
+		$(LCOV) -b $${TDIR}/ --directory $${TDIR}/$(PLATFORM) --capture -o tmp.info && \
+		$(LCOV) -a tmp.info -a $${CDIR}/coverage.info -o $${CDIR}/coverage.info && \
+		rm -f tmp.info ; \
+	fi
+ifdef COV_ADD_DIRS
+	# Now collect data from any additional directories under the target directory. \
+	TDIR=$$(basename $$(pwd)) && \
+	CDIR=`readlink -f $(COV_TARGET_DIR)` && \
+	$(CD) $${CDIR} && \
+	for dir in $(COV_ADD_DIRS) ; do \
+		if [ -d $${CDIR}/$$dir/$(PLATFORM) ] ; then \
+			$(LCOV) -b $${CDIR}/$${dir} --directory $${CDIR}/$${dir}/$(PLATFORM) --capture -o tmp.info && \
+			$(LCOV) -a tmp.info -a $${CDIR}/coverage.info -o $${CDIR}/coverage.info && \
+			rm -f tmp.info ; \
+		fi \
+	done
+endif
+	# Always last, filter unwanted output not under target dir. && \
+	TDIR=$$(basename $$(pwd)) && \
+	CDIR=`readlink -f $(COV_TARGET_DIR)` && \
+	# Filter unwanted output not under target dir. && \
+	$(LCOV) --extract $${CDIR}/coverage.info '*/'$$(basename $${CDIR})'/*' -o $${CDIR}/coverage.info && \
+	# Filter test output. && \
+	$(LCOV) --remove $${CDIR}/coverage.info '*/'$${TDIR}'/*' -o $${CDIR}/coverage.info && \
+	genhtml --branch-coverage -p $${CDIR} -o $${CDIR}/coverage-html $${CDIR}/coverage.info ;
+
+else ifdef TEST_DIR
+
+test:
+	$(MAKE) -f $(MAKEFILENAME) -C $(TEST_DIR) $(MAKECMDGOALS)	
+
+coverage: CFLAGS += -fprofile-arcs -ftest-coverage -DCOVERAGE
+coverage: CCFLAGS += -fprofile-arcs -ftest-coverage -DCOVERAGE
+coverage: CCLDFLAGS += -coverage
+coverage: clean cov_platform_dirs install
+	$(MAKE) -f $(MAKEFILENAME) -C $(TEST_DIR) $(MAKECMDGOALS)	
+
+else
+
+test:
+	@#
+
+coverage: CFLAGS += -fprofile-arcs -ftest-coverage -DCOVERAGE
+coverage: CCFLAGS += -fprofile-arcs -ftest-coverage -DCOVERAGE
+coverage: CCLDFLAGS += -coverage
+coverage: install
+	@#
+
+endif
+
+# restore these dirs in $(PLATFORM) after make clean
+cov_platform_dirs:
+	for i in $(APP_OBJS) $(LIB_OBJS); do mkdir -p `dirname $$i`; done
+
+CLEAN_TARGET += 
+.PHONY : clean
+clean : $(CLEAN_TARGET)
+        ifdef LIB_OBJS
+	   $(RM) -f $(LIB_OBJS)
+        endif
+        ifdef APP_OBJS
+	   $(RM) -f $(APP_OBJS)
+        endif
+        ifdef LIBRARY
+	   $(RM) -f $(PLATFORM)/$(LIBRARY)
+        endif
+        ifdef SOLIBRARY
+	   $(RM) -f $(PLATFORM)/$(SOLIBRARY)
+        endif
+        ifdef APPLICATION
+	   $(RM) -f $(PLATFORM)/$(APPLICATION)
+        endif
+        ifdef TEST_DIR
+	   $(RMDIR) $(TEST_DIR)/$(PLATFORM)
+        endif
+	$(RMDIR) coverage-html coverage.info
+	-$(RMDIR) $(PLATFORM)
+
+.PHONY : clobber
+clobber : clean
+        ifdef HEADERS
+	   -@$(DIRINSTALL) $(SHAREDIR)$(INCDIR_NAME)
+	   -$(CD) $(SHAREDIR)$(INCDIR_NAME); $(RM) $(HEADERS)
+        endif
+        ifdef LIBRARY
+	   $(RM) $(SHAREDIR)$(LIBDIR_NAME)/$(LIBRARY)
+	   $(RM) $(LIB_DEPFILES)
+        endif
+        ifdef SOLIBRARY
+	   $(RM) $(SHAREDIR)$(LIBDIR_NAME)/$(SOLIBRARY)
+	   $(RM) $(LIB_DEPFILES)
+        endif
+        ifdef APPLICATION
+	   $(RM) $(SHAREDIR)$(BINDIR_NAME)/$(APPLICATION)
+	   $(RM) $(APP_DEPFILES)
+        endif
+
+ifdef RELEASE
+.PHONY : Release
+Release:
+	@#
+endif
+
+.PHONY : no_depend
+no_depend:
+	@#
+
+buildloop:
+	@[ -n "$(MAKECMDGOALS)" ] && what="'$(MAKECMDGOALS)' in" || what=; \
+	set -e; for i in $(SUBDIRS) ; do \
+		echo -e "\n-- Making $$what $$i"; \
+		$(MAKE) -f $(MAKEFILENAME) -C $$i $(MAKECMDGOALS) || exit;\
+	done
+
+ifdef PROJECT
+
+run_install:
+	$(MAKE) -f $(MAKEFILENAME) install
+
+make_rpm_dir:
+	$(DIRINSTALL) pkg/$(PLATFORM)/RPMS
+
+INSTALL_ROOT = $(PROJ_BASE)/install/$(PLATFORM)
+.PHONY : spec
+ifdef COV_RELEASE_EXTRA
+spec: RELEASE_EXTRA_OPT=-x $(COV_RELEASE_EXTRA)
+endif
+ifdef SPEC_INPUT_DIR
+spec: SPEC_INPUT_OPT=-s $(SPEC_INPUT_DIR)
+endif
+spec: run_install make_rpm_dir copy_files 
+	FILTER_PROVIDES=$(FILTER_PROVIDES) FILTER_REQUIRES=$(FILTER_REQUIRES) \
+    BUILDARCH=$(OS_ARCH) \
+    $(MFE_MAKE_ENV_DIR)/makeSpec.sh $(SPEC_INPUT_OPT) $(RELEASE_EXTRA_OPT) $(PROJECT) $(INSTALL_ROOT)
+
+
+ifdef DOCKER
+pkg: spec
+	@echo "%_topdir $(PROJ_BASE)/pkg/$(PLATFORM)" > .rpmmacros
+	HOME=`pwd` rpmbuild -bb --buildroot $(INSTALL_ROOT) $(PROJECT).spec
+	@$(RM) .rpmmacros
+else
+pkg:
+        docker run --rm --tty --interactive $(VOLUMES) chrishirsch/rpm_build_$(OS_VENDOR)
+endif
+
+pkg_clean:
+	$(RMDIR) pkg/$(PLATFORM) install/$(PLATFORM)
+	$(RM) -f $(PROJECT).spec
+
+else
+
+pkg:
+	@#
+
+endif
+
+# Include the dependencies
+ifneq ($(findstring no_depend,$(MAKECMDGOALS)),no_depend)
+ifneq ($(findstring clean,$(MAKECMDGOALS)),clean)
+ifneq ($(findstring clobber,$(MAKECMDGOALS)),clobber)
+ifneq ($(findstring headershare,$(MAKECMDGOALS)),headershare)
+ifneq ($(findstring show_vars,$(MAKECMDGOALS)),show_vars)
+ifneq ($(findstring show_targets,$(MAKECMDGOALS)),show_targets)
+ifneq ($(findstring coverage,$(MAKECMDGOALS)),coverage)
+-include $(DEPFILES)
+endif
+endif
+endif
+endif
+endif
+endif
+endif
+
+
+# Create the VERSION label variables
+ifndef VERSION_STRING
+
+   VERSION_STRING = $(shell cat $(PROJ_BASE)/VERSION.txt 2> /dev/null)
+   ifeq ($(strip $(VERSION_STRING)),)
+      VERSION_STRING = $(shell cat $(PROJ_BASE)/../VERSION.txt 2> /dev/null)
+   endif
+
+endif
+
+ifeq ($(strip $(VERSION_STRING)),)
+  VERSION_STRING = 0.0.0-0
+endif
+
+export VERSION = $(shell echo $(VERSION_STRING) | cut -d- -f1)
+export BUILD_NUMBER = $(shell echo $(VERSION_STRING) | cut -d- -f2 )
+export OS_VENDOR
+
+
+# A standard target for looking at what the various vars turn out to be.
+show_vars:
+	@echo SHARE_INCS=$(SHARE_INCS)
+	@echo PATH=$(PATH)
+	@echo PWD=$(PWD)
+	@echo SHARE_DASHI=$(SHARE_DASHI)
+	@echo LIBS_DASHL=$(LIBS_DASHL)
+	@echo CC=$(CC), CPLUS=$(CPLUS)
+	@echo TMPL_INCS=$(TMPL_INCS)
+	@echo TMPL_DASHI=$(TMPL_DASHI)
+	@echo MAKE=$(MAKE)
+	@echo MAKEFILENAME=$(MAKEFILENAME)
+	@echo MFE_MAKE_ENV_DIR=$(MFE_MAKE_ENV_DIR)
+	@echo LIB_BUILD_AREA=$(LIB_BUILD_AREA)
+	@echo SHAREDIR=$(SHAREDIR)
+	@echo INSTALLDIR=$(INSTALLDIR)
+	@echo INSTALL_DIRECTORIES=$(INSTALL_DIRECTORIES)
+	@echo MAKECMDGOALS=$(MAKECMDGOALS)
+	@echo SHARE_LIBS=$(SHARE_LIBS)
+	@echo VERSION_STRING=$(VERSION_STRING)
+	@echo VERSION=$(VERSION)
+	@echo BUILD_NUMBER=$(BUILD_NUMBER)
+	@echo PROJ_BASE=$(PROJ_BASE)
+	@echo SYM=$(SYM)
+	@echo ALL_LIBS=$(ALL_LIBS)
+	@echo SOLDFLAGS=$(SOLDFLAGS)
+	@echo OS_VENDOR=$(OS_VENDOR) 
+	@echo OS_TYPE=$(OS_TYPE) 
+	@echo OS_ARCH=$(OS_ARCH) 
+	@echo OS_VERSION=$(OS_VERSION) 
+	@echo PLATFORM=$(PLATFORM) 
+
+show_targets:
+	@echo BUILD_TARGET=$(BUILD_TARGET)
+	@echo INSTALL_TARGET=$(INSTALL_TARGET)
+	@echo CLEAN_TARGET=$(CLEAN_TARGET)
+	@echo SHARE_TARGET=$(SHARE_TARGET)
+	@echo APP_OBJS=$(APP_OBJS)
+	@echo LIB_OBJS=$(LIB_OBJS)
+	@echo DEPFILES=$(DEPFILES)
+	@echo $(findstring $(MAKECMDGOALS),Release)
+

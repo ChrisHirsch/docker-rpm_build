@@ -1,0 +1,29 @@
+# This text file lists directory names that makeSpec.sh should exclude from
+# the %files section of the spec file.
+
+# Normally, makeSpec.sh includes every file, link, and directory that it finds
+# in the build project's install dir.  If every directory were always included
+# with every build project's rpm(s), including the common/shared top-level
+# directories (e.g., /bin, /etc, /var, etc., that tla-install
+# provides/owns), the ownership & permissions would need to be kept in sync
+# across all of the owning rpms, which isn't easy to do with many disparate
+# repos building the rpms.  While each project may specify directory override
+# exclusions (and inclusions), the exclusion of such common directories may
+# also be globally specified here.
+
+# The format is as follows (one directory exclusion per line):
+#	<owning project>  <directory path>
+# or if there ever needs to be multiple owning projects:
+#	|<proj1>|<proj2>|...|  <directory path>
+
+tla-install     /
+tla-install     /etc
+tla-install     /etc/init.d
+tla-install     /etc/httpd
+tla-install     /etc/httpd/conf.d
+tla-install     /usr
+tla-install     /usr/share
+tla-install     /usr/share/doc
+tla-install     /usr/lib64
+tla-install     /usr/lib64/httpd
+tla-install     /usr/lib64/httpd/modules
