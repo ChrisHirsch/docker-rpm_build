@@ -68,6 +68,20 @@ FILTER_REQUIRES = .so
 By adding .so, the grep that determines which files to look at to run provides/requires will be run to INVERT the match. 
 So if FILTER_PROVIDES = badlib.so then goodlib.so would be looked at for PROVIDES but badlib.so would NOT
 
+#### Filtering a directory so RPM will not auto-find dependencies
+If you wish to not have the build try and be smart (and want to do your own requirements) try something like:
+```
+FILTER_REQUIRES = $(ROOT)/opt/sw
+```
+
+Where in your makefile your copy_files: looks something like
+```
+copy_files: clean
+        mkdir -p $(ROOT)/opt/sw
+        rsync -av version.txt --exclude=Dockerfile --exclude=env/ --exclude '.hg' --exclude=pkg/ --exclude=install/ --exclude=Makefile . $(ROOT)/opt/sw
+```
+and will copy all your perl, python, whatever into that /opt/sw directory
+
 ### To set the architecture (in the case of noarch)
 If the desired package architecture is noarch or something besides the autodetected simply set 
 
