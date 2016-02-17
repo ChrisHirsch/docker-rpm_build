@@ -101,6 +101,7 @@ echo "Prefix: $PREFIX"
 [ -n "$REQUIRES" ] && echo "Requires: $REQUIRES"
 [ -n "$BUILDARCH" ] && echo "BuildArch: $BUILDARCH"
 [ -n "$PROVIDES" ] && echo "Provides: $PROVIDES"
+[ -n "$EPOCH" ] && echo "Epoch: $EPOCH"
 
 echo "Vendor: $VENDOR"
 echo "Packager: $PACKAGER"

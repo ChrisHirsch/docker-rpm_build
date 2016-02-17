@@ -82,6 +82,18 @@ copy_files: clean
 ```
 and will copy all your perl, python, whatever into that /opt/sw directory
 
+### Setting a specific Epoch value
+If you need to set the Epoch value in the spec (in the case of changing versions from a higher to a lower value)
+set EPOCH in your env/spec.defs
+```
+EPOCH = 2
+```
+
+or whatever value you with epoch to be. You can verify the epoch by 
+```
+rpm -qp --queryformat 'Epoch = %{EPOCH}\n' *.rpm 
+```
+
 ### To set the architecture (in the case of noarch)
 If the desired package architecture is noarch or something besides the autodetected simply set 
 
