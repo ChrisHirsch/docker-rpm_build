@@ -11,7 +11,7 @@ RUN rpm -Uvh https://dl.fedoraproject.org/pub/epel/6/x86_64/epel-release-6-8.noa
 RUN yum update -y
 
 # Bring in needed packages
-RUN yum -y install rpm-build make gcc tar rsync httpd-devel curl-devel libstdc++-devel
+RUN yum -y install rpm-build make gcc tar rsync httpd-devel curl-devel libstdc++-devel zip
 
 COPY make-env /make-env 
 
